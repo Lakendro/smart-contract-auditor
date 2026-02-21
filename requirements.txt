@@ -1,0 +1,21 @@
+# Smart Contract Auditor - Python Dependencies
+
+# Core dependencies
+# Slither - 静态分析工具
+slither-analyzer>=0.10.0
+
+# Testing
+pytest>=7.4.0
+pytest-cov>=4.1.0
+
+# Code quality
+black>=23.7.0
+flake8>=6.0.0
+mypy>=1.5.0
+
+# Optional dependencies
+# py-solc-x>=2.0.0  # 如果需要Solidity编译器集成
+
+# Documentation
+sphinx>=7.1.0
+sphinx-rtd-theme>=1.3.0
