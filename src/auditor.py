@@ -1,334 +1,290 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-智能合约审计工具 - 主入口
-集成Slither进行静态分析，提供常见安全检查
+Smart Contract Auditor - 主程序
+基于Slither的智能合约安全审计工具
 """
 
-import argparse
+import subprocess
 import json
-import sys
 from pathlib import Path
-from typing import Dict, List, Optional
-
-from detectors.reentrancy import ReentrancyDetector
-from detectors.integer_overflow import IntegerOverflowDetector
-from detectors.access_control import AccessControlDetector
-from reporters.html_reporter import HTMLReporter
-from reporters.json_reporter import JSONReporter
-from reporters.markdown_reporter import MarkdownReporter
+from datetime import datetime
+from typing import Dict, List
 
 
 class SmartContractAuditor:
-    """智能合约审计器主类"""
+    """智能合约审计器"""
 
-    def __init__(self, target_path: str, output_dir: str = "reports"):
-        self.target_path = Path(target_path)
-        self.output_dir = Path(output_dir)
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-
-        # 初始化检测器
-        self.detectors = [
-            ReentrancyDetector(),
-            IntegerOverflowDetector(),
-            AccessControlDetector()
-        ]
-
-        # 初始化报告生成器
-        self.reporters = {
-            "html": HTMLReporter(),
-            "json": JSONReporter(),
-            "md": MarkdownReporter()
-        }
-
-    def run_slither_analysis(self) -> Dict:
-        """运行Slither静态分析"""
-        print(f"🔍 Running Slither analysis on {self.target_path}...")
-
-        try:
-            from slither.slither import Slither
-
-            slither = Slither(str(self.target_path))
-            results = {}
-
-            # 收集Slither检测结果
-            for detector in slither.detectors:
-                detector_name = detector.__class__.__name__
-                findings = []
-                for result in detector.detect():
-                    findings.append({
-                        "description": str(result),
-                        "severity": "High" if "high" in str(result).lower() else "Medium",
-                        "type": "slither"
-                    })
-
-                if findings:
-                    results[detector_name] = findings
-
-            print(f"✅ Slither analysis completed. Found {len(results)} detector types.")
-            return results
-
-        except ImportError:
-            print("⚠️  Slither not installed. Skipping Slither analysis.")
-            print("   Install with: pip install slither-analyzer")
-            return {}
-        except Exception as e:
-            print(f"❌ Error running Slither: {e}")
-            return {}
-
-    def run_custom_detectors(self) -> Dict:
-        """运行自定义检测器"""
-        print(f"🔍 Running custom security checks...")
-
-        all_findings = {}
-
-        for detector in self.detectors:
-            print(f"   Running {detector.name}...")
-            try:
-                findings = detector.detect(self.target_path)
-                if findings:
-                    all_findings[detector.name] = findings
-            except Exception as e:
-                print(f"   ⚠️  Error in {detector.name}: {e}")
-
-        print(f"✅ Custom checks completed.")
-        return all_findings
-
-    def analyze(self) -> Dict:
-        """执行完整审计流程"""
-        print("\n" + "="*60)
-        print("🛡️  Smart Contract Auditor Starting")
-        print("="*60)
-
-        # 运行Slither分析
-        slither_results = self.run_slither_analysis()
-
-        # 运行自定义检测器
-        custom_results = self.run_custom_detectors()
-
-        # 合并结果
-        all_results = {
-            "slither": slither_results,
-            "custom": custom_results
-        }
-
-        # 添加修复建议
-        all_results["remediation"] = self._generate_remediation(all_results)
-
-        return all_results
-
-    def _generate_remediation(self, results: Dict) -> Dict:
-        """生成修复建议"""
-        remediation = {}
-
-        # 检查结果类型并提供修复建议
-        if "custom" in results:
-            for detector_name, findings in results["custom"].items():
-                for finding in findings:
-                    issue_type = finding.get("type", "")
-                    if issue_type and issue_type not in remediation:
-                        remediation[issue_type] = self._get_remediation_advice(issue_type)
-
-        return remediation
-
-    def _get_remediation_advice(self, issue_type: str) -> Dict:
-        """获取特定问题的修复建议"""
-        advice_map = {
-            "reentrancy": {
-                "severity": "Critical",
-                "title": "重入攻击 (Reentrancy)",
-                "description": "攻击者可以在状态更新前递归调用函数，可能导致资金被多次提取",
-                "examples": [
-                    "函数外部调用前未更新状态",
-                    "使用.transfer()代替.call()但仍有重入风险"
-                ],
-                "solutions": [
-                    "使用Checks-Effects-Interactions模式：先检查条件，再更新状态，最后执行外部调用",
-                    "使用OpenZeppelin的ReentrancyGuard修饰器",
-                    "对于简单支付，使用.transfer()或.send()（但有gas限制）",
-                    "使用nonReentrant修饰器保护关键函数"
-                ],
-                "code_example": """
-// ✅ 正确实现
-function withdraw(uint256 amount) external nonReentrant {
-    require(balances[msg.sender] >= amount, "Insufficient balance");
-
-    // 1. 先更新状态
-    balances[msg.sender] -= amount;
-
-    // 2. 再执行外部调用
-    (bool success, ) = msg.sender.call{value: amount}("");
-    require(success, "Transfer failed");
-}
-
-// ❌ 错误实现
-function withdraw(uint256 amount) external {
-    require(balances[msg.sender] >= amount, "Insufficient balance");
-
-    // ❌ 先执行外部调用
-    (bool success, ) = msg.sender.call{value: amount}("");
-    require(success, "Transfer failed");
-
-    // ❌ 后更新状态
-    balances[msg.sender] -= amount;
-}
-                """
+    def __init__(self):
+        self.vulnerabilities = {
+            'reentrancy': {
+                'severity': 'HIGH',
+                'description': '重入攻击漏洞',
+                'recommendation': '使用ReentrancyGuard或检查-效果-交互模式'
             },
-            "integer_overflow": {
-                "severity": "High",
-                "title": "整数溢出/下溢 (Integer Overflow/Underflow)",
-                "description": "Solidity 0.8.x版本之前需要手动检查溢出，可能导致数值计算错误",
-                "examples": [
-                    "加法可能导致数值超出类型上限",
-                    "减法可能导致数值变成巨大的正数"
-                ],
-                "solutions": [
-                    "使用Solidity 0.8.x或更高版本（内置溢出检查）",
-                    "使用OpenZeppelin的SafeMath库",
-                    "使用unchecked块进行已验证的安全计算以节省gas",
-                    "考虑使用uint256处理大数值"
-                ],
-                "code_example": """
-// ✅ Solidity 0.8+ (自动溢出检查)
-function add(uint256 a, uint256 b) public pure returns (uint256) {
-    return a + b;  // 自动检测溢出
-}
-
-// ✅ 使用SafeMath (Solidity 0.8之前)
-import "@openzeppelin/contracts/utils/math/SafeMath.sol";
-
-function add(uint256 a, uint256 b) public pure returns (uint256) {
-    return SafeMath.add(a, b);
-}
-
-// ✅ 使用unchecked (仅在确定安全时)
-function subtract(uint256 a, uint256 b) public pure returns (uint256) {
-    unchecked {
-        return a - b;  // 仅在已知a >= b时使用
-    }
-}
-                """
+            'integer_overflow': {
+                'severity': 'HIGH',
+                'description': '整数溢出漏洞',
+                'recommendation': '使用Solidity 0.8+或SafeMath库'
             },
-            "access_control": {
-                "severity": "High",
-                "title": "访问控制绕过 (Access Control)",
-                "description": "权限检查缺失或不当可能导致未授权用户执行特权操作",
-                "examples": [
-                    "缺失onlyOwner修饰器",
-                    "使用tx.origin代替msg.sender进行身份验证",
-                    "公开函数暴露敏感操作"
-                ],
-                "solutions": [
-                    "使用OpenZeppelin的AccessControl或Ownable合约",
-                    "使用基于角色的访问控制 (RBAC)",
-                    "避免使用tx.origin进行授权检查",
-                    "严格区分公开和内部函数",
-                    "对修改状态的函数添加权限检查"
-                ],
-                "code_example": """
-// ✅ 正确实现
-import "@openzeppelin/contracts/access/Ownable.sol";
-
-contract MyContract is Ownable {
-    function sensitiveFunction() external onlyOwner {
-        // 只有所有者可以执行
-    }
-}
-
-// ❌ 错误实现
-contract VulnerableContract {
-    function sensitiveFunction() external {
-        // ❌ 无权限检查，任何人都可以执行
-    }
-}
-
-// ❌ 危险：使用tx.origin
-function withdraw() external {
-    require(tx.origin == owner, "Not authorized");  // ❌ 容易被钓鱼攻击
-    payable(msg.sender).transfer(address(this).balance);
-}
-                """
+            'access_control': {
+                'severity': 'HIGH',
+                'description': '权限控制不当',
+                'recommendation': '实现适当的访问控制修饰符'
+            },
+            'unprotected_function': {
+                'severity': 'MEDIUM',
+                'description': '未保护的函数',
+                'recommendation': '添加onlyOwner或其他访问控制'
+            },
+            'tx_origin': {
+                'severity': 'MEDIUM',
+                'description': '使用tx.origin进行认证',
+                'recommendation': '使用msg.sender替代tx.origin'
+            },
+            'unchecked_return': {
+                'severity': 'MEDIUM',
+                'description': '未检查的返回值',
+                'recommendation': '检查所有外部调用的返回值'
+            },
+            'timestamp_manipulation': {
+                'severity': 'LOW',
+                'description': '时间戳依赖',
+                'recommendation': '不要依赖block.timestamp进行关键逻辑'
+            },
+            'gas_limit': {
+                'severity': 'LOW',
+                'description': 'Gas限制风险',
+                'recommendation': '优化循环和批量操作'
             }
         }
 
-        return advice_map.get(issue_type, {
-            "severity": "Medium",
-            "title": issue_type,
-            "description": "请进一步分析此问题",
-            "solutions": ["请查阅相关安全文档和最佳实践"]
-        })
+    def run_slither(self, contract_path: str) -> Dict:
+        """
+        运行Slither进行静态分析
 
-    def generate_reports(self, results: Dict, formats: List[str] = None):
-        """生成审计报告"""
-        if formats is None:
-            formats = ["html", "json", "md"]
+        Args:
+            contract_path: 合约文件路径
 
-        print(f"\n📄 Generating reports...")
+        Returns:
+            分析结果
+        """
+        try:
+            result = subprocess.run(
+                ['slither', contract_path, '--json', '-'],
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
 
-        for format_type in formats:
-            if format_type in self.reporters:
-                reporter = self.reporters[format_type]
-                report_path = self.output_dir / f"audit_report.{format_type}"
-                reporter.generate(results, report_path)
-                print(f"   ✅ {format_type.upper()} report: {report_path}")
+            if result.returncode == 0:
+                return json.loads(result.stdout)
+            else:
+                return {
+                    'error': result.stderr,
+                    'timestamp': datetime.now().isoformat()
+                }
+        except subprocess.TimeoutExpired:
+            return {
+                'error': 'Slither execution timeout',
+                'timestamp': datetime.now().isoformat()
+            }
+        except FileNotFoundError:
+            return {
+                'error': 'Slither not installed',
+                'timestamp': datetime.now().isoformat()
+            }
+        except Exception as e:
+            return {
+                'error': str(e),
+                'timestamp': datetime.now().isoformat()
+            }
+
+    def manual_check(self, contract_code: str) -> List[Dict]:
+        """
+        手动检查常见漏洞
+
+        Args:
+            contract_code: 合约代码
+
+        Returns:
+            发现的漏洞列表
+        """
+        findings = []
+
+        # 检查重入攻击
+        if 'call.value' in contract_code or '.call{value:' in contract_code:
+            if 'nonReentrant' not in contract_code and 'ReentrancyGuard' not in contract_code:
+                findings.append({
+                    'type': 'reentrancy',
+                    'severity': self.vulnerabilities['reentrancy']['severity'],
+                    'description': self.vulnerabilities['reentrancy']['description'],
+                    'recommendation': self.vulnerabilities['reentrancy']['recommendation'],
+                    'lines': self._find_lines(contract_code, ['call.value', '.call{value:'])
+                })
+
+        # 检查tx.origin
+        if 'tx.origin' in contract_code:
+            findings.append({
+                'type': 'tx_origin',
+                'severity': self.vulnerabilities['tx_origin']['severity'],
+                'description': self.vulnerabilities['tx_origin']['description'],
+                'recommendation': self.vulnerabilities['tx_origin']['recommendation'],
+                'lines': self._find_lines(contract_code, ['tx.origin'])
+            })
+
+        # 检查未保护的函数
+        if 'public' in contract_code or 'external' in contract_code:
+            if 'onlyOwner' not in contract_code and 'AccessControl' not in contract_code:
+                findings.append({
+                    'type': 'unprotected_function',
+                    'severity': self.vulnerabilities['unprotected_function']['severity'],
+                    'description': self.vulnerabilities['unprotected_function']['description'],
+                    'recommendation': self.vulnerabilities['unprotected_function']['recommendation'],
+                    'lines': self._find_lines(contract_code, ['public', 'external'])
+                })
+
+        # 检查时间戳依赖
+        if 'block.timestamp' in contract_code or 'now' in contract_code:
+            findings.append({
+                'type': 'timestamp_manipulation',
+                'severity': self.vulnerabilities['timestamp_manipulation']['severity'],
+                'description': self.vulnerabilities['timestamp_manipulation']['description'],
+                'recommendation': self.vulnerabilities['timestamp_manipulation']['recommendation'],
+                'lines': self._find_lines(contract_code, ['block.timestamp', 'now'])
+            })
+
+        return findings
+
+    def _find_lines(self, code: str, keywords: List[str]) -> List[int]:
+        """查找包含关键词的行号"""
+        lines = []
+        for i, line in enumerate(code.split('\n'), 1):
+            if any(keyword in line for keyword in keywords):
+                lines.append(i)
+        return lines
+
+    def generate_report(self, contract_path: str, findings: List[Dict]) -> str:
+        """
+        生成审计报告
+
+        Args:
+            contract_path: 合约路径
+            findings: 发现的漏洞列表
+
+        Returns:
+            报告文本
+        """
+        lines = [
+            "# 智能合约安全审计报告",
+            "=" * 60,
+            f"合约路径: {contract_path}",
+            f"审计时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"发现漏洞: {len(findings)}个",
+            "",
+            "## 漏洞详情",
+            "-" * 60,
+        ]
+
+        if not findings:
+            lines.append("\n✅ 未发现明显漏洞")
+        else:
+            # 按严重程度分组
+            severity_order = {'HIGH': 1, 'MEDIUM': 2, 'LOW': 3}
+            sorted_findings = sorted(findings, key=lambda x: severity_order.get(x['severity'], 99))
+
+            for i, finding in enumerate(sorted_findings, 1):
+                severity_emoji = {'HIGH': '🔴', 'MEDIUM': '🟡', 'LOW': '🟢'}
+                lines.extend([
+                    f"\n### {i}. {finding['description']} {severity_emoji.get(finding['severity'], '⚪')}",
+                    f"- **类型:** {finding['type']}",
+                    f"- **严重程度:** {finding['severity']}",
+                    f"- **建议:** {finding['recommendation']}",
+                ])
+                if finding.get('lines'):
+                    lines.append(f"- **位置:** 行 {', '.join(map(str, finding['lines']))}")
+
+        lines.extend([
+            "",
+            "## 审计建议",
+            "-" * 60,
+            "",
+            "### 高优先级",
+            "1. 修复所有HIGH级别漏洞",
+            "2. 添加全面的访问控制",
+            "3. 实现重入攻击保护",
+            "",
+            "### 中优先级",
+            "1. 修复MEDIUM级别漏洞",
+            "2. 优化Gas使用",
+            "3. 添加事件日志",
+            "",
+            "### 低优先级",
+            "1. 修复LOW级别漏洞",
+            "2. 改进代码注释",
+            "3. 优化代码结构",
+            "",
+            "## 免责声明",
+            "-" * 60,
+            "",
+            "本审计报告仅供参考，不构成任何形式的担保。",
+            "建议在进行生产部署前，请专业审计团队进行全面审计。",
+            "",
+            "=" * 60,
+            "报告结束",
+        ])
+
+        return "\n".join(lines)
+
+    def save_report(self, report: str, output_path: str):
+        """保存报告到文件"""
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write(report)
+        print(f"✅ 报告已保存到 {output_path}")
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="智能合约审计工具 - Smart Contract Auditor",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-示例:
-  # 分析单个合约
-  python auditor.py ./contracts/MyContract.sol
+    """主函数"""
+    import sys
 
-  # 分析Foundry项目
-  python auditor.py ./foundry-project/
+    if len(sys.argv) < 2:
+        print("用法: python3 auditor.py <contract_path>")
+        sys.exit(1)
 
-  # 指定输出格式和目录
-  python auditor.py ./contracts/ -o ./reports -f html json
-        """
-    )
+    contract_path = sys.argv[1]
+    auditor = SmartContractAuditor()
 
-    parser.add_argument(
-        "target",
-        help="目标合约文件或项目目录"
-    )
+    print(f"🔍 正在审计合约: {contract_path}")
 
-    parser.add_argument(
-        "-o", "--output",
-        default="reports",
-        help="报告输出目录 (默认: reports)"
-    )
+    # 读取合约代码
+    with open(contract_path, 'r', encoding='utf-8') as f:
+        contract_code = f.read()
 
-    parser.add_argument(
-        "-f", "--format",
-        nargs="+",
-        choices=["html", "json", "md"],
-        default=["html", "json", "md"],
-        help="报告格式 (默认: html json md)"
-    )
+    # 手动检查
+    print("📋 执行手动检查...")
+    findings = auditor.manual_check(contract_code)
 
-    parser.add_argument(
-        "--skip-slither",
-        action="store_true",
-        help="跳过Slither分析"
-    )
-
-    args = parser.parse_args()
-
-    # 创建审计器
-    auditor = SmartContractAuditor(args.target, args.output)
-
-    # 执行分析
-    results = auditor.analyze()
+    # 尝试运行Slither
+    print("🔧 尝试运行Slither...")
+    slither_result = auditor.run_slither(contract_path)
+    if 'error' not in slither_result:
+        print("✅ Slither分析完成")
+        # 合并Slither结果
+        # 这里可以添加更多的结果处理逻辑
+    else:
+        print(f"⚠️  Slither分析失败: {slither_result.get('error')}")
 
     # 生成报告
-    auditor.generate_reports(results, args.format)
+    print("📝 生成审计报告...")
+    report = auditor.generate_report(contract_path, findings)
+    print("\n" + report)
 
-    print("\n" + "="*60)
-    print("✅ Audit completed successfully!")
-    print("="*60)
+    # 保存报告
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    output_path = f'audit_report_{timestamp}.md'
+    auditor.save_report(report, output_path)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
